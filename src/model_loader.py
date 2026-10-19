@@ -90,12 +90,44 @@ def load_processor_and_model(
     trust_remote_code = config["model"].get("trust_remote_code", False)
 
     logger.info(f"Loading processor from: {model_path}")
-    processor = AutoProcessor.from_pretrained(
-        model_path,
-        trust_remote_code=trust_remote_code,
-        min_pixels=config["preprocessing"]["min_image_side"] * config["preprocessing"]["min_image_side"],
-        max_pixels=config["preprocessing"]["max_pixels"]
-    )
+    processor = None
+    min_pix = config["preprocessing"]["min_image_side"] * config["preprocessing"]["min_image_side"]
+    max_pix = config["preprocessing"]["max_pixels"]
+
+    # 1. Attempt loading AutoProcessor from local model_path
+    try:
+        processor = AutoProcessor.from_pretrained(
+            model_path,
+            trust_remote_code=trust_remote_code,
+            min_pixels=min_pix,
+            max_pixels=max_pix
+        )
+    except Exception as err:
+        logger.warning(f"AutoProcessor.from_pretrained failed on local path: {err}")
+
+    # 2. Attempt Qwen2_5_VLProcessor directly
+    if processor is None:
+        try:
+            from transformers import Qwen2_5_VLProcessor
+            processor = Qwen2_5_VLProcessor.from_pretrained(
+                model_path,
+                trust_remote_code=trust_remote_code,
+                min_pixels=min_pix,
+                max_pixels=max_pix
+            )
+        except Exception as err:
+            logger.warning(f"Qwen2_5_VLProcessor failed on local path: {err}")
+
+    # 3. Fallback: Load processor config from Hugging Face hub (weights stay local)
+    if processor is None:
+        hub_fallback = "Qwen/Qwen2.5-VL-3B-Instruct"
+        logger.info(f"Loading processor definitions from Hugging Face hub '{hub_fallback}'...")
+        processor = AutoProcessor.from_pretrained(
+            hub_fallback,
+            trust_remote_code=trust_remote_code,
+            min_pixels=min_pix,
+            max_pixels=max_pix
+        )
 
     hw = detect_hardware()
     quant_method = config["model"].get("quantization", "4bit_nf4")
