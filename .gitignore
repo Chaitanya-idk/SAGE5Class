@@ -1,0 +1,64 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & Virtual Envs
+.env
+.venv
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Base Model Weights & Checkpoints (Never commit huge weights)
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+model_weights/
+checkpoints/
+checkpoint-*/
+adapter/
+final_adapter/
+
+# Datasets and Local Caches
+images/
+split_images/
+*.jpg
+*.jpeg
+*.png
+*.webp
+data/
+downloads/
+.cache/
+hf_cache/
+hub/
+
+# Training Runs, Reports & Artifacts
+sage_runs/
+/kaggle/working/
+logs/
+*.log
+wandb/
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.key
+*.token
+*.pem
+credentials.json
