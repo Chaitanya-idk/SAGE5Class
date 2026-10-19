@@ -47,12 +47,25 @@ class CheckpointManager:
         if processor is not None and hasattr(processor, "save_pretrained"):
             processor.save_pretrained(str(ckpt_path))
 
-        # 3. Save optimizer & scheduler & RNG state
+        # Safe RNG state serialization
+        cpu_rng = None
+        try:
+            cpu_rng = torch.get_rng_state().tolist()
+        except Exception:
+            pass
+
+        cuda_rng = None
+        if torch.cuda.is_available():
+            try:
+                cuda_rng = [s.tolist() if hasattr(s, "tolist") else list(s) for s in torch.cuda.get_rng_state_all()]
+            except Exception:
+                pass
+
         state = {
             "step": step,
             "epoch": epoch,
-            "rng_state": torch.get_rng_state().tolist(),
-            "cuda_rng_state": torch.cuda.get_rng_state_all().tolist() if torch.cuda.is_available() else None,
+            "rng_state": cpu_rng,
+            "cuda_rng_state": cuda_rng,
             "extra": extra_state or {}
         }
         if optimizer is not None:
