@@ -50,14 +50,11 @@ def download_dataset_metadata_and_crop(
             resume_download=True
         )
 
-        # Download crop-specific images
+        # Download only crop images referenced by metadata (2,000 files)
         patterns = [
             f"images/{crop}/*",
             f"images/{crop.capitalize()}/*",
             f"images/{crop.lower()}/*",
-            f"split_images/*/{crop}/*",
-            f"split_images/*/{crop.capitalize()}/*",
-            f"split_images/*/{crop.lower()}/*"
         ]
         snapshot_download(
             repo_id=repo_id,
