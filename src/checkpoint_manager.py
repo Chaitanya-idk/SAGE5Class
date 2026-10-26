@@ -51,41 +51,51 @@ def resolve_checkpoint_path(
             return None, None
         checkpoint_ref = f"{crop.lower()}/checkpoints/checkpoint-step-600"
 
+    def _is_valid_adapter_dir(p: Path) -> bool:
+        has_cfg = (p / "adapter_config.json").exists()
+        has_weights = (p / "adapter_model.safetensors").exists() or (p / "adapter_model.bin").exists()
+        return has_cfg and has_weights
+
     # Check if checkpoint_ref is already an existing local directory with adapter
     local_candidate = Path(checkpoint_ref)
-    if local_candidate.exists() and (local_candidate / "adapter_config.json").exists():
+    if local_candidate.exists() and _is_valid_adapter_dir(local_candidate):
+        logger.info(f"Using valid local checkpoint directory at: {local_candidate}")
         return local_candidate, None
 
     # Parse HF repo and subfolder
     repo_id, subfolder = parse_checkpoint_ref(checkpoint_ref, default_repo=default_repo)
     hf_source = f"{repo_id}/{subfolder}"
 
-    # Check if already present in cache_dir
+    # Check if already present and verified in cache_dir
     cached_path = Path(cache_dir) / subfolder
-    if cached_path.exists() and (cached_path / "adapter_config.json").exists():
-        logger.info(f"Using already downloaded checkpoint at: {cached_path}")
+    if cached_path.exists() and _is_valid_adapter_dir(cached_path):
+        logger.info(f"Using already downloaded and verified checkpoint at: {cached_path}")
         return cached_path, hf_source
 
-    # Download selectively from Hugging Face
+    # Download selectively from Hugging Face model repository
     token = token or os.environ.get("HF_TOKEN")
-    logger.info(f"Downloading checkpoint '{subfolder}' from Hugging Face repository '{repo_id}'...")
+    logger.info(f"Downloading model checkpoint '{subfolder}' from Hugging Face model repository '{repo_id}'...")
     try:
         from huggingface_hub import snapshot_download
         snapshot_download(
             repo_id=repo_id,
+            repo_type="model",
             allow_patterns=[f"{subfolder}/*"],
             token=token,
             local_dir=cache_dir,
             resume_download=True
         )
-        if cached_path.exists():
-            logger.info(f"Checkpoint successfully resolved at: {cached_path}")
+        if cached_path.exists() and _is_valid_adapter_dir(cached_path):
+            logger.info(f"Model checkpoint successfully downloaded and verified at: {cached_path}")
             return cached_path, hf_source
+        elif cached_path.exists():
+            logger.error(f"Downloaded folder {cached_path} does not contain valid adapter weights (adapter_model.safetensors / adapter_config.json).")
+            return None, hf_source
     except Exception as e:
-        logger.error(f"Error downloading checkpoint from {hf_source}: {e}")
+        logger.error(f"Error downloading model checkpoint from {hf_source}: {e}")
 
-    # Fallback to local_candidate if it exists
-    if local_candidate.exists():
+    # Fallback to local_candidate if valid
+    if local_candidate.exists() and _is_valid_adapter_dir(local_candidate):
         return local_candidate, hf_source
 
     return None, hf_source

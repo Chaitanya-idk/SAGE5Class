@@ -204,12 +204,31 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
 
     # 3. Checkpoint resolution & Pre-training summary
     resume_ref = config["runtime"].get("resume_from_checkpoint")
+    model_checkpoint_repo = config.get("model", {}).get("checkpoint_repo_id", "IDK-Chaitanya/SAGE5Class-cp")
     resolved_ckpt_path, hf_source_path = resolve_checkpoint_path(
         checkpoint_ref=resume_ref,
         crop=crop,
-        default_repo=config["dataset"].get("repo_id", "IDK-Chaitanya/SAGE5Class-cp"),
+        default_repo=model_checkpoint_repo,
         token=os.environ.get(config["dataset"].get("hf_token_env", "HF_TOKEN"))
     )
+
+    # 4. Hard Failure: If resumption requested, require valid verified checkpoint
+    is_resuming = resume_ref not in [None, False, "none", "None", "false"]
+    if is_resuming:
+        if not resolved_ckpt_path:
+            raise RuntimeError(
+                f"\n[FATAL ERROR] Resumption requested for crop '{crop}' ({resume_ref}), "
+                f"but checkpoint could not be downloaded or resolved from model repository '{model_checkpoint_repo}'. "
+                f"Execution terminated immediately to prevent retraining an uninitialized adapter from scratch."
+            )
+        has_cfg = (resolved_ckpt_path / "adapter_config.json").exists()
+        has_weights = (resolved_ckpt_path / "adapter_model.safetensors").exists() or (resolved_ckpt_path / "adapter_model.bin").exists()
+        if not (has_cfg and has_weights):
+            raise RuntimeError(
+                f"\n[FATAL ERROR] Checkpoint at '{resolved_ckpt_path}' is incomplete or corrupted "
+                f"(adapter_config.json={has_cfg}, adapter_model.safetensors={has_weights}). "
+                f"Execution terminated immediately to prevent retraining an uninitialized adapter from scratch."
+            )
 
     ckpt_state = get_checkpoint_state(resolved_ckpt_path) if resolved_ckpt_path else {}
     prev_epoch = ckpt_state.get("epoch", 0)
@@ -224,6 +243,7 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
     print("SAGE CONTINUED TRAINING CONFIGURATION")
     print("=" * 65)
     print(f"Crop Name:                  {crop}")
+    print(f"Model Checkpoint Repo:      {model_checkpoint_repo}")
     print(f"Hugging Face Checkpoint:    {hf_source_path or 'None (training from scratch)'}")
     print(f"Actual Local Checkpoint:    {resolved_ckpt_path or 'None'}")
     print(f"Resume Mode:                {resume_mode}")
@@ -235,9 +255,25 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
     print(f"Output Directory:           {reporter.run_dir}")
     print("=" * 65 + "\n")
 
-    # 4. Model & Processor Loading
+    # 5. Model & Processor Loading
     processor, model = load_processor_and_model(config, adapter_path=resolved_ckpt_path)
     collator = QwenMultimodalCollator(processor)
+
+    # 6. Pretrained Adapter Loading Confirmation Print
+    if resolved_ckpt_path:
+        trainable_params, total_params = model.get_nb_trainable_parameters() if hasattr(model, "get_nb_trainable_parameters") else (0, 0)
+        pct = 100 * trainable_params / max(1, total_params)
+        print("\n" + "=" * 65)
+        print("CONFIRMATION: PRETRAINED ADAPTER WEIGHTS VERIFIED & LOADED")
+        print("=" * 65)
+        print(f"Base Model:             Qwen2.5-VL-3B-Instruct (4-bit NF4, Frozen)")
+        print(f"Adapter Loaded From:    {resolved_ckpt_path}")
+        print(f"Adapter Weights File:   adapter_model.safetensors (VERIFIED)")
+        print(f"Trainable Parameters:   {trainable_params:,} ({pct:.3f}%)")
+        print(f"Resuming From State:    Global Step {prev_step}, Epoch {prev_epoch}")
+        print(f"Continuing For:         {additional_epochs} additional epochs (Epochs {prev_epoch + 1} to {total_target_epochs})")
+        print(f"Optimizer & Scheduler:  Reinitialized (LR={lr}, Warmup=0.02)")
+        print("=" * 65 + "\n")
 
     train_loader = DataLoader(
         train_dataset,

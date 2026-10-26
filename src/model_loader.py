@@ -194,7 +194,17 @@ def load_processor_and_model(
             )
 
         # Check if loading existing trained adapter checkpoint
-        if adapter_path and (Path(adapter_path) / "adapter_config.json").exists():
+        if adapter_path is not None:
+            p = Path(adapter_path)
+            has_cfg = (p / "adapter_config.json").exists()
+            has_weights = (p / "adapter_model.safetensors").exists() or (p / "adapter_model.bin").exists()
+            if not (has_cfg and has_weights):
+                raise RuntimeError(
+                    f"FATAL: Checkpoint path '{adapter_path}' does not contain required adapter files "
+                    f"(adapter_config.json: {has_cfg}, adapter_model.safetensors: {has_weights}). "
+                    f"Terminating immediately to avoid training an uninitialized adapter from scratch."
+                )
+
             logger.info(f"Loading existing trained LoRA adapter weights from: {adapter_path}")
             model = PeftModel.from_pretrained(
                 model,
@@ -202,7 +212,7 @@ def load_processor_and_model(
                 is_trainable=True
             )
             trainable_params, total_params = model.get_nb_trainable_parameters()
-            pct = 100 * trainable_params / total_params
+            pct = 100 * trainable_params / max(1, total_params)
             logger.info(
                 f"Resumed existing LoRA adapter: {trainable_params:,} trainable / {total_params:,} total parameters ({pct:.3f}%)"
             )

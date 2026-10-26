@@ -42,6 +42,7 @@ class TestCheckpointManager(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             (tmp_path / "adapter_config.json").touch()
+            (tmp_path / "adapter_model.safetensors").touch()
             resolved, source = resolve_checkpoint_path(str(tmp_path))
             self.assertEqual(resolved, tmp_path)
             self.assertIsNone(source)

@@ -29,6 +29,7 @@ model:
   model_path: null
   model_path_env: "QWEN_MODEL_PATH"
   model_name: "Qwen2.5-VL-3B-Instruct"
+  checkpoint_repo_id: "IDK-Chaitanya/SAGE5Class-cp"
   quantization: "4bit_nf4"
   trust_remote_code: false
   use_gradient_checkpointing: true
