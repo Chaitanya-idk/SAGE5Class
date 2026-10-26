@@ -22,7 +22,7 @@ from src.data_loader import (
     SAGEDataset
 )
 from src.model_loader import load_processor_and_model
-from src.checkpoint_manager import CheckpointManager
+from src.checkpoint_manager import CheckpointManager, resolve_checkpoint_path, get_checkpoint_state
 from src.reporting import RunReporter
 from src.evaluate import evaluate_model
 
@@ -202,8 +202,41 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
     val_dataset = SAGEDataset(val_records, canonical_classes, crop)
     test_dataset = SAGEDataset(test_records, canonical_classes, crop)
 
-    # 3. Model & Processor Loading
-    processor, model = load_processor_and_model(config)
+    # 3. Checkpoint resolution & Pre-training summary
+    resume_ref = config["runtime"].get("resume_from_checkpoint")
+    resolved_ckpt_path, hf_source_path = resolve_checkpoint_path(
+        checkpoint_ref=resume_ref,
+        crop=crop,
+        default_repo=config["dataset"].get("repo_id", "IDK-Chaitanya/SAGE5Class-cp"),
+        token=os.environ.get(config["dataset"].get("hf_token_env", "HF_TOKEN"))
+    )
+
+    ckpt_state = get_checkpoint_state(resolved_ckpt_path) if resolved_ckpt_path else {}
+    prev_epoch = ckpt_state.get("epoch", 0)
+    prev_step = ckpt_state.get("step", 0)
+    additional_epochs = int(config["training"]["epochs"])
+    total_target_epochs = prev_epoch + additional_epochs
+    resume_mode = "adapter_weights_reinit_optimizer" if resolved_ckpt_path else "none"
+
+    lr = float(config["training"]["learning_rate"])
+
+    print("\n" + "=" * 65)
+    print("SAGE CONTINUED TRAINING CONFIGURATION")
+    print("=" * 65)
+    print(f"Crop Name:                  {crop}")
+    print(f"Hugging Face Checkpoint:    {hf_source_path or 'None (training from scratch)'}")
+    print(f"Actual Local Checkpoint:    {resolved_ckpt_path or 'None'}")
+    print(f"Resume Mode:                {resume_mode}")
+    print(f"Previous Completed Epoch:   {prev_epoch}")
+    print(f"Previous Global Step:       {prev_step}")
+    print(f"Requested Additional Epochs:{additional_epochs}")
+    print(f"Total Target Epochs:        {total_target_epochs}")
+    print(f"Effective Learning Rate:    {lr}")
+    print(f"Output Directory:           {reporter.run_dir}")
+    print("=" * 65 + "\n")
+
+    # 4. Model & Processor Loading
+    processor, model = load_processor_and_model(config, adapter_path=resolved_ckpt_path)
     collator = QwenMultimodalCollator(processor)
 
     train_loader = DataLoader(
@@ -214,9 +247,8 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
         num_workers=config["training"].get("dataloader_num_workers", 0)
     )
 
-    # 4. Optimizer, Scheduler, CheckpointManager
+    # 5. Optimizer, Scheduler, CheckpointManager
     from transformers import get_cosine_schedule_with_warmup
-    lr = float(config["training"]["learning_rate"])
     weight_decay = float(config["training"].get("weight_decay", 0.01))
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
@@ -224,15 +256,15 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
         weight_decay=weight_decay
     )
 
-    epochs = config["training"]["epochs"]
     grad_accum_steps = config["training"]["gradient_accumulation_steps"]
-    total_training_steps = (len(train_loader) // grad_accum_steps) * epochs
-    warmup_steps = int(total_training_steps * config["training"].get("warmup_ratio", 0.05))
+    total_continuation_steps = (len(train_loader) // grad_accum_steps) * additional_epochs
+    warmup_ratio = float(config["training"].get("warmup_ratio", 0.02))
+    warmup_steps = int(total_continuation_steps * warmup_ratio)
 
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
-        num_training_steps=total_training_steps
+        num_training_steps=total_continuation_steps
     )
 
     ckpt_manager = CheckpointManager(
@@ -240,21 +272,15 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
         save_total_limit=config["training"].get("save_total_limit", 3)
     )
 
-    # Resume from checkpoint if enabled
-    start_step = 0
-    start_epoch = 1
-    if config["runtime"].get("resume_from_checkpoint") in ["auto", True]:
-        latest_ckpt = ckpt_manager.find_latest_checkpoint()
-        if latest_ckpt:
-            state = ckpt_manager.load_checkpoint(latest_ckpt, model, optimizer, scheduler)
-            start_step = state.get("step", 0)
-            start_epoch = state.get("epoch", 1)
+    start_step = prev_step
+    start_epoch = prev_epoch + 1
+    end_epoch = prev_epoch + additional_epochs
 
-    # 5. Runtime Estimation & Smoke Test
-    if config["runtime"].get("estimate_runtime_before_training", True) and start_step == 0:
-        estimate_runtime(model, train_loader, epochs, grad_accum_steps, config["runtime"]["time_budget_hours"])
+    # 6. Runtime Estimation & Smoke Test
+    if config["runtime"].get("estimate_runtime_before_training", True) and prev_epoch == 0:
+        estimate_runtime(model, train_loader, additional_epochs, grad_accum_steps, config["runtime"]["time_budget_hours"])
 
-    # 6. Training Loop
+    # 7. Training Loop
     device = next(model.parameters()).device
     model.train()
     global_step = start_step
@@ -268,14 +294,14 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
     logger.info("=== Starting Training Loop ===")
 
     try:
-        for epoch in range(start_epoch, epochs + 1):
+        for epoch in range(start_epoch, end_epoch + 1):
             epoch_loss_total = 0.0
             epoch_batches = 0
             epoch_start_time = time.time()
 
             pbar = tqdm(
                 total=len(train_loader),
-                desc=f"Training {crop} | Epoch {epoch}/{epochs}",
+                desc=f"Training {crop} | Epoch {epoch}/{end_epoch} (Continuation {epoch - prev_epoch}/{additional_epochs})",
                 dynamic_ncols=True
             )
 
@@ -374,9 +400,12 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
                 if val_f1 > best_val_f1:
                     best_val_f1 = val_f1
                     patience_counter = 0
-                    # Save best adapter
+                    # Save best adapter to best_adapter and adapter
+                    model.save_pretrained(str(reporter.best_adapter_dir))
+                    processor.save_pretrained(str(reporter.best_adapter_dir))
                     model.save_pretrained(str(reporter.adapter_dir))
                     processor.save_pretrained(str(reporter.adapter_dir))
+                    logger.info(f"New best validation Macro F1: {best_val_f1:.4f}. Saved best adapter to {reporter.best_adapter_dir}")
                 else:
                     patience_counter += 1
                     if config["runtime"].get("early_stopping", True) and patience_counter >= early_stop_patience:
@@ -400,14 +429,21 @@ def run_training_pipeline(config_path: Optional[str] = None, overrides: Optional
             scheduler=scheduler
         )
 
-    # 7. Final Model Saving & Test Evaluation
-    logger.info("Saving final trained adapter weights...")
-    model.save_pretrained(str(reporter.adapter_dir))
-    processor.save_pretrained(str(reporter.adapter_dir))
+    # 8. Final Model Saving & Test Evaluation
+    logger.info(f"Saving final trained adapter weights to {reporter.final_adapter_dir}...")
+    model.save_pretrained(str(reporter.final_adapter_dir))
+    processor.save_pretrained(str(reporter.final_adapter_dir))
 
     test_metrics = None
     if len(test_dataset) > 0:
-        logger.info("Running evaluation on held-out test split...")
+        logger.info("Running evaluation on held-out test split using best validation adapter...")
+        best_adapter_file = reporter.best_adapter_dir / "adapter_model.safetensors"
+        if best_adapter_file.exists():
+            from peft import set_peft_model_state_dict
+            from safetensors.torch import load_file
+            best_weights = load_file(str(best_adapter_file))
+            set_peft_model_state_dict(model, best_weights)
+            logger.info("Restored best validation adapter weights for test set evaluation.")
         test_metrics = evaluate_model(
             model=model,
             processor=processor,

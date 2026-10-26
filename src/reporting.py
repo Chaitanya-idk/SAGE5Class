@@ -20,8 +20,12 @@ class RunReporter:
         self.crop = crop
         self.checkpoints_dir = self.run_dir / "checkpoints"
         self.adapter_dir = self.run_dir / "adapter"
+        self.best_adapter_dir = self.run_dir / "best_adapter"
+        self.final_adapter_dir = self.run_dir / "final_adapter"
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
         self.adapter_dir.mkdir(parents=True, exist_ok=True)
+        self.best_adapter_dir.mkdir(parents=True, exist_ok=True)
+        self.final_adapter_dir.mkdir(parents=True, exist_ok=True)
 
         self.batch_loss_file = self.run_dir / "batch_loss.csv"
         self.epoch_metrics_file = self.run_dir / "epoch_metrics.csv"

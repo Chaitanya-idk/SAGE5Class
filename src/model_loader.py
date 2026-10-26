@@ -74,11 +74,13 @@ def resolve_model_path(config: Dict[str, Any]) -> str:
     return model_name
 
 def load_processor_and_model(
-    config: Dict[str, Any]
+    config: Dict[str, Any],
+    adapter_path: Optional[Any] = None
 ) -> Tuple[Any, Any]:
     """
     Loads AutoProcessor and Qwen2.5-VL model with 4-bit NF4 QLoRA adapter
-    according to configuration and available hardware.
+    according to configuration and available hardware. If adapter_path is provided,
+    loads existing trained LoRA weights rather than initializing from scratch.
     """
     from transformers import AutoProcessor, AutoConfig
     try:
@@ -89,21 +91,35 @@ def load_processor_and_model(
     model_path = resolve_model_path(config)
     trust_remote_code = config["model"].get("trust_remote_code", False)
 
-    logger.info(f"Loading processor from: {model_path}")
     processor = None
     min_pix = config["preprocessing"]["min_image_side"] * config["preprocessing"]["min_image_side"]
     max_pix = config["preprocessing"]["max_pixels"]
 
+    # 0. If adapter_path contains processor config, attempt loading from checkpoint
+    if adapter_path and (Path(adapter_path) / "processor_config.json").exists():
+        try:
+            logger.info(f"Loading processor from checkpoint: {adapter_path}")
+            processor = AutoProcessor.from_pretrained(
+                str(adapter_path),
+                trust_remote_code=trust_remote_code,
+                min_pixels=min_pix,
+                max_pixels=max_pix
+            )
+        except Exception as err:
+            logger.warning(f"Could not load processor from checkpoint ({err}). Falling back to base model path.")
+
     # 1. Attempt loading AutoProcessor from local model_path
-    try:
-        processor = AutoProcessor.from_pretrained(
-            model_path,
-            trust_remote_code=trust_remote_code,
-            min_pixels=min_pix,
-            max_pixels=max_pix
-        )
-    except Exception as err:
-        logger.warning(f"AutoProcessor.from_pretrained failed on local path: {err}")
+    if processor is None:
+        logger.info(f"Loading processor from: {model_path}")
+        try:
+            processor = AutoProcessor.from_pretrained(
+                model_path,
+                trust_remote_code=trust_remote_code,
+                min_pixels=min_pix,
+                max_pixels=max_pix
+            )
+        except Exception as err:
+            logger.warning(f"AutoProcessor.from_pretrained failed on local path: {err}")
 
     # 2. Attempt Qwen2_5_VLProcessor directly
     if processor is None:
@@ -169,7 +185,7 @@ def load_processor_and_model(
 
     # Configure PEFT QLoRA if requested
     if config["training"].get("method", "qlora") == "qlora":
-        from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model, TaskType
+        from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model, TaskType, PeftModel
 
         if quant_config is not None:
             model = prepare_model_for_kbit_training(
@@ -177,27 +193,41 @@ def load_processor_and_model(
                 use_gradient_checkpointing=config["training"].get("gradient_checkpointing", True)
             )
 
-        target_modules = config["lora"].get("target_modules", "auto")
-        if target_modules == "auto" or not target_modules:
-            target_modules = [
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj"
-            ]
+        # Check if loading existing trained adapter checkpoint
+        if adapter_path and (Path(adapter_path) / "adapter_config.json").exists():
+            logger.info(f"Loading existing trained LoRA adapter weights from: {adapter_path}")
+            model = PeftModel.from_pretrained(
+                model,
+                str(adapter_path),
+                is_trainable=True
+            )
+            trainable_params, total_params = model.get_nb_trainable_parameters()
+            pct = 100 * trainable_params / total_params
+            logger.info(
+                f"Resumed existing LoRA adapter: {trainable_params:,} trainable / {total_params:,} total parameters ({pct:.3f}%)"
+            )
+        else:
+            target_modules = config["lora"].get("target_modules", "auto")
+            if target_modules == "auto" or not target_modules:
+                target_modules = [
+                    "q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj"
+                ]
 
-        lora_config = LoraConfig(
-            r=config["lora"].get("r", 16),
-            lora_alpha=config["lora"].get("alpha", 32),
-            lora_dropout=config["lora"].get("dropout", 0.05),
-            target_modules=target_modules,
-            bias="none",
-            task_type=TaskType.CAUSAL_LM
-        )
+            lora_config = LoraConfig(
+                r=config["lora"].get("r", 16),
+                lora_alpha=config["lora"].get("alpha", 32),
+                lora_dropout=config["lora"].get("dropout", 0.05),
+                target_modules=target_modules,
+                bias="none",
+                task_type=TaskType.CAUSAL_LM
+            )
 
-        model = get_peft_model(model, lora_config)
-        trainable_params, total_params = model.get_nb_trainable_parameters()
-        pct = 100 * trainable_params / total_params
-        logger.info(
-            f"LoRA adapter initialized: {trainable_params:,} trainable / {total_params:,} total parameters ({pct:.3f}%)"
-        )
+            model = get_peft_model(model, lora_config)
+            trainable_params, total_params = model.get_nb_trainable_parameters()
+            pct = 100 * trainable_params / total_params
+            logger.info(
+                f"LoRA adapter initialized: {trainable_params:,} trainable / {total_params:,} total parameters ({pct:.3f}%)"
+            )
 
     return processor, model

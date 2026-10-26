@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--lr", type=float, default=None, help="Learning rate")
     parser.add_argument("--output-dir", type=str, default=None, help="Output root directory")
     parser.add_argument("--max-train-samples", type=int, default=None, help="Cap training samples for budget testing")
+    parser.add_argument("--resume-from-checkpoint", type=str, default=None, help="Path or HuggingFace checkpoint to resume from")
     args = parser.parse_args()
 
     overrides = {}
@@ -36,6 +37,8 @@ def main():
         overrides.setdefault("output", {})["root_dir"] = args.output_dir
     if args.max_train_samples:
         overrides.setdefault("runtime", {})["max_train_samples"] = args.max_train_samples
+    if args.resume_from_checkpoint:
+        overrides.setdefault("runtime", {})["resume_from_checkpoint"] = args.resume_from_checkpoint
 
     logger.info("Initializing SAGE training pipeline...")
     run_dir = run_training_pipeline(config_path=args.config, overrides=overrides)
